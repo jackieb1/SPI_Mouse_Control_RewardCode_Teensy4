@@ -34,6 +34,27 @@ int checkErrToneTime = 0;
 unsigned long timeRewStart;
 unsigned long timeErrorToneStart;
 
+// Velocity output is updated once per fixed wall-clock interval rather than
+// once per loop(). loop() runs much faster on the Teensy 4 than the old
+// Teensy 3, so a per-loop write made the time-averaged voltage per ball
+// rotation scale with the loop period (~10x smaller here). Accumulating raw
+// sensor counts and emitting them on a fixed interval makes the output
+// independent of loop() speed, so the calibrated gain is portable across rigs.
+long accX1 = 0;
+long accY1 = 0;
+long accX2 = 0;
+long accY2 = 0;
+elapsedMicros velTimer;                     // microseconds since last DAC update
+const unsigned long velIntervalUs = 10000;  // fixed 10 ms velocity update window
+
+// Clamp a velocity value to the 12-bit DAC range [0, 4095].
+int clampDAC(double v) {
+  long iv = lround(v);
+  if (iv < 0)    iv = 0;
+  if (iv > 4095) iv = 4095;
+  return (int)iv;
+}
+
 
 const double px1 = 0.8151;
 const double rx1 = 0.1849;
@@ -149,6 +170,8 @@ void setup() {
   dispRegisters2();
   delay(1500);
   initComplete=9;
+  
+
 
 }
 
@@ -435,14 +458,36 @@ void readXY2(int *xy){
   
   void loop() {
   
+    // Read both sensors every loop and accumulate raw delta-counts. Reads
+    // auto-clear the sensor delta registers, so counts are conserved across
+    // the interval (nothing is lost between DAC updates).
     readXY(&xydat[0]);
     readXY2(&xy2dat[0]);
-    dP = px1*xydat[0] + py1*xydat[1] + px2*xy2dat[0] + py2*xy2dat[1];
-    dR = rx1*xydat[0] + ry1*xydat[1] + rx2*xy2dat[0] + ry2*xy2dat[1];
-    dY = yx1*xydat[0] + yy1*xydat[1] + yx2*xy2dat[0] + yy2*xy2dat[1];
-    analogWrite(pVelPin,dP+2048);
-    analogWrite(rVelPin,dR+2048);
-    analogWrite(yVelPin,dY+2048); 
+    accX1 += xydat[0];
+    accY1 += xydat[1];
+    accX2 += xy2dat[0];
+    accY2 += xy2dat[1];
+
+    // Emit velocity once per fixed interval, regardless of loop() rate.
+    if (velTimer >= velIntervalUs) {
+      velTimer -= velIntervalUs;   // subtract (don't zero) to stay phase-locked, no drift
+
+      dP = px1*accX1 + py1*accY1 + px2*accX2 + py2*accY2;
+      dR = rx1*accX1 + ry1*accY1 + rx2*accX2 + ry2*accY2;
+      dY = yx1*accX1 + yy1*accY1 + yx2*accX2 + yy2*accY2;
+
+      analogWrite(pVelPin, clampDAC(dP + 2048));
+      analogWrite(rVelPin, clampDAC(dR + 2048));
+      analogWrite(yVelPin, clampDAC(dY + 2048));
+
+      accX1 = 0; accY1 = 0; accX2 = 0; accY2 = 0;
+
+      // If loop() blocked long enough to fall a whole interval behind, resync
+      // rather than firing repeatedly to "catch up".
+      if (velTimer >= velIntervalUs) {
+        velTimer = 0;
+      }
+    }
     
             // send data only when you receive data:
         if (Serial.available() > 0) {
@@ -528,9 +573,9 @@ void readXY2(int *xy){
 //                
 //               }
 
-    
-    delay(10);
+    // No delay(): loop() runs at the SPI-limited rate so multiple sensor
+    // reads accumulate per velIntervalUs window. The DAC update cadence is set
+    // by velTimer above, not by a blocking delay.
 
-    
   }
 
