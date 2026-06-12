@@ -33,6 +33,7 @@ int checkErrToneTime = 0;
 
 unsigned long timeRewStart;
 unsigned long timeErrorToneStart;
+unsigned long valveDur = 0; // reward valve open time (ms) from the latest serial command
 
 // Velocity output is updated once per fixed wall-clock interval rather than
 // once per loop(). loop() runs much faster on the Teensy 4 than the old
@@ -455,9 +456,30 @@ void readXY2(int *xy){
   //digitalWrite(ncs2,HIGH);     
 }
 
-  
+
+// Parse a 6-digit reward command from ViRMen (giveReward.m -> writeValveCommand):
+// chars 0-2 = valve1 ms, chars 3-5 = valve2 ms. ViRMen sends the reward duration
+// (set in getRigInfo.m rewardPulseDurationDict) in the valve2 field, so open the
+// reward solenoid (valv) for that many ms.
+void interpretCommand(String message) {
+  message.trim();
+  if (message.length() != 6) {
+    Serial.println("#"); // "#" means error / malformed command
+    return;
+  }
+  long dur = message.substring(3).toInt(); // valve2 field carries the reward duration
+  if (dur > 0) {
+    digitalWrite(valv, HIGH);
+    timeRewStart = millis();
+    valveDur     = dur;
+    checkRewTime = 1;
+    Serial.println(String(3) + '\t' + String(millis())); // reward-on event code (unchanged)
+  }
+}
+
+
   void loop() {
-  
+
     // Read both sensors every loop and accumulate raw delta-counts. Reads
     // auto-clear the sensor delta registers, so counts are conserved across
     // the interval (nothing is lost between DAC updates).
@@ -489,64 +511,43 @@ void readXY2(int *xy){
       }
     }
     
-            // send data only when you receive data:
-        if (Serial.available() > 0) {
-          
-                // read the incoming byte:
-                incomingByte = Serial.read();
-
-                if (incomingByte ==1) {
-                  Serial.println(String(1) + '\t' + String(millis()));
-                  // play correct tone
-                  tone(spkr,7000,durCorrTone);
-
-                  // say what you got:
-//                  Serial.print("I received CorrectTone: ");
-//                  Serial.println(incomingByte, DEC);
-                    Serial.println(String(4) + '\t' + String(millis()));
-                }
-
-                else if (incomingByte ==2) {
-                  Serial.println(String(2) + '\t' + String(millis()));
-                  // play noise tone
-                  tone(spkr,1000,durErrTone);
-                  //timeErrorToneStart = millis();
-                  //checkErrToneTime = 1;
-                  Serial.println(String(5) + '\t' + String(millis()));
-                  // say what you got:
-//                  Serial.print("I received IncorrectTone: ");
-//                  Serial.println(incomingByte, DEC);
-                }
-
-                else if (incomingByte ==3) {
-                  // give reward
-                  digitalWrite(valv,HIGH);
-                  timeRewStart = millis(); 
-                  Serial.println(String(3) + '\t' + String(millis()));
-                  checkRewTime = 1;
-                  // say what you got:
-//                  Serial.print("I received Reward: ");
-//                  Serial.println(incomingByte, DEC);
-                }
-
-                else
-                  // say what you got:
-//                  Serial.print("I received: ");
-//                  Serial.println(incomingByte, DEC);
-                    Serial.println(String(incomingByte) + '\t' + String(millis())); 
-                
+        // Process all available serial bytes. Tone commands stay single
+        // non-printable bytes (1 = correct, 2 = error). Reward is now a
+        // \n-terminated 6-digit ASCII command from ViRMen (giveReward.m ->
+        // writeValveCommand); tone bytes (1, 2) and 'S' never collide with the
+        // ASCII digits / '\n' of the valve command.
+        static String usbMessage = "";   // reward-command buffer, persists across loops
+        while (Serial.available() > 0) {
+          char inByte = Serial.read();
+          if (inByte == 'S') {                // ViRMen connectToTeensy handshake
+            Serial.println('S');
+          } else if (inByte == 1) {           // play correct tone
+            Serial.println(String(1) + '\t' + String(millis()));
+            tone(spkr,7000,durCorrTone);
+            Serial.println(String(4) + '\t' + String(millis()));
+          } else if (inByte == 2) {           // play noise tone
+            Serial.println(String(2) + '\t' + String(millis()));
+            tone(spkr,1000,durErrTone);
+            Serial.println(String(5) + '\t' + String(millis()));
+          } else if (inByte == '\n') {        // complete reward command
+            interpretCommand(usbMessage);
+            usbMessage = "";
+          } else {                            // accumulate digits of the reward command
+            usbMessage = usbMessage + inByte;
+          }
         }
-        
-              if(checkRewTime == 1){ 
-              
-              if((millis()-timeRewStart)>timeValv ){ 
-              
-                     digitalWrite(valv,LOW); 
-                     Serial.println(String(6) + '\t' + String(millis())); 
-                     checkRewTime = 0; 
-              
-                   } 
-              
+
+              if(checkRewTime == 1){
+
+              unsigned long tHigh = millis()-timeRewStart;
+              if((tHigh>valveDur) || (tHigh>10000) ){
+
+                     digitalWrite(valv,LOW);
+                     Serial.println(String(6) + '\t' + String(millis()));
+                     checkRewTime = 0;
+
+                   }
+
               }
 
 
