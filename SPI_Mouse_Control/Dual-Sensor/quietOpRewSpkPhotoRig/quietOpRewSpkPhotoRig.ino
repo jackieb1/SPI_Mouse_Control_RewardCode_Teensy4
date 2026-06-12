@@ -21,7 +21,7 @@ const int pVelPin = 3;
 const int rVelPin = 4;
 const int yVelPin = 5;
 const int spkr = 23;
-const int valv = 22;
+const int valv = 23;
 const int licks2 = 17;
 
 //variables
